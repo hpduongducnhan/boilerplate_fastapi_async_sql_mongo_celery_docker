@@ -1,0 +1,109 @@
+version: "3.8"
+
+x-restart-policy: &restart_policy
+  restart: unless-stopped
+  env_file: './.env'
+  # add DNS resolve
+  # extra_hosts:
+  #   - "<name>:<ip>"
+  #   - "<name>:<ip>"
+
+services:
+  nginx:
+    <<: *restart_policy
+    image: nginx:alpine
+    container_name: ${ENV_NAME_PROJECT}_${ENV_NAME_NGINX_CONT}
+    volumes:
+      - ./configs/nginx/docker_proxy.conf:/etc/nginx/conf.d/default.conf
+      # - path_to_pem:/etc/nginx/cert/star_xx_com.pem
+      # - path_to_key:/etc/nginx/cert/star_xx_com.key
+      # - path_to_crt:/etc/nginx/cert/star_xx_com.crt
+    ports:
+      - "${ENV_PORT_NGINX_APP}:3000"
+      - "${ENV_PORT_NGINX_FLOWER}:4000"
+    volumes_from:
+      - app
+    depends_on:
+      - app
+
+  app:
+    <<: *restart_policy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ndd/fastapi_app
+    container_name: ${ENV_NAME_PROJECT}_${EMV_NAME_APP_CONT}
+    env_file:
+      - ./.env
+    volumes:
+      - ./:/fastapi_app
+    command:
+      - bash
+      - -c
+      - |
+        cd /fastapi_app
+        ./run_app.sh
+    # in production, remove --reload in command above
+    depends_on:
+      - redis
+      # - mongodb
+
+  mongodb:
+    <<: *restart_policy
+    image: mongo
+    container_name: ${ENV_NAME_PROJECT}_${ENV_NAME_MONGO_CONT}
+    env_file:
+      - ./.env
+    ports:
+      - ${ENV_MONGO_PORT}:27017
+    volumes:
+      - ./data/mongodb:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${ENV_MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${ENV_MONGO_ROOT_PASSWORD}
+
+  redis:
+    <<: *restart_policy
+    image: redis:5.0
+    container_name: ${ENV_NAME_PROJECT}_${ENV_NAME_REDIS_CONT}
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${ENV_REDIS_PASSWORD}
+    # ports:  # uncomment ports if you need expose to outside, i use user-defined network, so i just need call container-name as DNS
+    #   - ${ENV_REDIS_PORT}:6379
+    volumes:
+      - ./data/redis:/data
+
+  celery_worker:
+    <<: *restart_policy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ndd/fastapi_app
+    container_name: ${ENV_NAME_PROJECT}_${ENV_NAME_CELERY_CONT}
+    env_file:
+      - ./.env
+    # volumes:
+    #   - ./:/fastapi_app
+    # ports:
+    #   - 5566:5566
+    volumes_from:
+      - app
+    command:
+      - bash
+      - -c
+      - |
+        cd /fastapi_app
+        supervisord -c ./configs/supervisor/docker_celery.conf
+    depends_on:
+      - redis
+      - app
+
+networks:
+  default:
+    name: dj_app_network
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.172.172.0/24
+        gateway: 172.172.172.1
